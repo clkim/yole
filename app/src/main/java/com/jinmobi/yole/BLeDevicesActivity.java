@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.View;
 import android.widget.Toolbar;
 
 
@@ -15,6 +16,15 @@ public class BLeDevicesActivity extends Activity {
         setContentView(R.layout.activity_ble_devices);
 
         Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
+        // for navigation button set in layout
+        toolbar.setNavigationOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                //no op for now
+            }
+        });
+        toolbar.setNavigationContentDescription("No Op");
+
         setActionBar(toolbar);
     }
 

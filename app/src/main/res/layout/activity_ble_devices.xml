@@ -8,7 +8,9 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:minHeight="?android:attr/actionBarSize"
-        android:background="?android:attr/colorPrimary" />
+        android:background="?android:attr/colorPrimary"
+        android:navigationIcon="@drawable/ic_launcher"
+        />
 
     <TextView android:text="@string/hello_world"
         android:paddingLeft="@dimen/activity_horizontal_margin"
