@@ -21,4 +21,6 @@ android {
 
 dependencies {
     compile fileTree(dir: 'libs', include: ['*.jar'])
+    compile 'com.lorentzos.swipecards:library:1.0.8@aar' //latest version # from http://gradleplease.appspot.com/#com.lorentzos.swipecards
+    compile 'com.jakewharton:butterknife:5.1.2'
 }
