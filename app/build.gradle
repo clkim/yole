@@ -21,6 +21,9 @@ android {
 
 dependencies {
     compile fileTree(dir: 'libs', include: ['*.jar'])
-    compile 'com.lorentzos.swipecards:library:1.0.8@aar' //latest version # from http://gradleplease.appspot.com/#com.lorentzos.swipecards
-    compile 'com.jakewharton:butterknife:5.1.2'
+    // get latest version #.#.#@aar from http://gradleplease.appspot.com/#com.lorentzos.swipecards
+    compile 'com.lorentzos.swipecards:library:1.0.8@aar'
+    // if lintOptions or packagingOptions, or proguard settings needed for butterknife
+    //  see http://jakewharton.github.io/butterknife/
+    compile 'com.jakewharton:butterknife:6.0.0'
 }
