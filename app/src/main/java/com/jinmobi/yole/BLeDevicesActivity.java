@@ -16,6 +16,7 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.ArrayAdapter;
+import android.widget.ProgressBar;
 import android.widget.Toast;
 import android.widget.Toolbar;
 
@@ -36,10 +37,12 @@ public class BLeDevicesActivity extends Activity {
     private static final String LOG_TAG = BLeDevicesActivity.class.getSimpleName();
 
     private static String        EMPTY;             // text to show on swipe card with no device
+    private static ProgressBar   PROGRESS_BAR;      // used by scan menu item in toolbar
     private ArrayList<String>    al;                // array list to store found device names
     private ArrayAdapter<String> arrayAdapter;      // array adapter for the SwipeFlingAdapterView
     private BluetoothAdapter     mBluetoothAdapter; // the local Bluetooth adapter; scan BLE devices
     private Handler              mHandler;          // handler to post runnable on the main thread
+    private MenuItem             miScanMenuItem;    // menu item to scan for (app in) BLE device
 
     /**
      *  We use the excellent Swipecards library which is Copyright 2014 Dionysis Lorentzos.
@@ -60,6 +63,7 @@ public class BLeDevicesActivity extends Activity {
         ButterKnife.inject(this); // inject the annotated view objects
 
         EMPTY = getResources().getString(R.string.empty);
+        PROGRESS_BAR = new ProgressBar(this);
 
         // for navigation button set in layout
         toolbar.setNavigationOnClickListener(new View.OnClickListener() {
@@ -202,7 +206,13 @@ public class BLeDevicesActivity extends Activity {
         flingContainer.setAdapter(arrayAdapter);
 
         // scan for nearby BLE
-        scanLeDevice(true); // underlying arrayAdapter is new at this time
+        mHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                scanLeDevice(true); // underlying arrayAdapter is new at this time
+            }
+        }, 50); // small delay for menu item to be created for use as indeterminate progress icon
+
     }
 
     @Override
@@ -233,13 +243,21 @@ public class BLeDevicesActivity extends Activity {
             mHandler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    bluetoothLeScanner.stopScan(scScanCallback);
+                    scanLeDevice(false);
                 }
             }, SCAN_PERIOD);
 
+            // TBD: call stop advertising
             bluetoothLeScanner.startScan(scScanCallback);
+            // set scan menu icon indicator on
+            if (miScanMenuItem != null) // defensive, see NPE if called without delay from onResume
+                miScanMenuItem.setActionView(PROGRESS_BAR);
+
         } else {
             bluetoothLeScanner.stopScan(scScanCallback);
+            // set scan menu icon indicator off
+            miScanMenuItem.setActionView(null);
+            // TBD: call start advertising
         }
     }
 
@@ -301,7 +319,8 @@ public class BLeDevicesActivity extends Activity {
     public boolean onCreateOptionsMenu(Menu menu) {
         // Inflate the menu; this adds items to the action bar if it is present.
         getMenuInflater().inflate(R.menu.menu_ble_devices, menu);
-        return true;
+        miScanMenuItem = menu.findItem(R.id.action_ble_scan);
+        return super.onCreateOptionsMenu(menu);
     }
 
     @Override
@@ -311,11 +330,15 @@ public class BLeDevicesActivity extends Activity {
         // as you specify a parent activity in AndroidManifest.xml.
         int id = item.getItemId();
 
-        //noinspection SimplifiableIfStatement
-        if (id == R.id.action_settings) {
-            return true;
-        }
+        switch (id) {
+            case R.id.action_ble_scan:
+                scanLeDevice(true);
+                return true;
+            case R.id.action_settings:
+                return true;
 
-        return super.onOptionsItemSelected(item);
+            default:
+                return super.onOptionsItemSelected(item);
+        }
     }
 }
