@@ -2,6 +2,7 @@ package com.jinmobi.yole;
 
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
@@ -247,6 +248,8 @@ public class BLeDevicesActivity extends Activity {
                 }
             }, SCAN_PERIOD);
 
+            // clear array in adapter
+            al.clear();
             // TBD: call stop advertising
             bluetoothLeScanner.startScan(scScanCallback);
             // set scan menu icon indicator on
@@ -279,12 +282,17 @@ public class BLeDevicesActivity extends Activity {
                     Log.d(LOG_TAG, "removed get(0) EMPTY");
                 }
             }
+            // get result to put on array adapter for swipe cards
+            BluetoothDevice device = result.getDevice();
+            final String resultDeviceName;
+            if (device.getName() != null)
+                resultDeviceName = device.getName();
+            else
+                resultDeviceName = ""+Math.abs(device.getAddress().hashCode());
 
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    String resultDeviceName = result.getDevice().getName();
-                    if (resultDeviceName == null) resultDeviceName = "null Device";
                     // defensive check against NPE seen in testing with orientation change
                     if (al != null && arrayAdapter != null) {
                         // update the arraylist and notify adapter of change
