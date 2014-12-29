@@ -4,6 +4,10 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
+import android.bluetooth.le.AdvertiseCallback;
+import android.bluetooth.le.AdvertiseData;
+import android.bluetooth.le.AdvertiseSettings;
+import android.bluetooth.le.BluetoothLeAdvertiser;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
@@ -12,6 +16,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.ParcelUuid;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -32,16 +37,19 @@ import butterknife.InjectView;
 
 public class BLeDevicesActivity extends Activity {
 
-    private static final int    MAX_VISIBLE = 2;       // so at most 2 cards are 'Empty'
-    private static final int    REQUEST_ENABLE_BT = 1; // arbitrary request code
-    private static final long   SCAN_PERIOD = 10000;   // time in ms to do scanning
+    private static final int    MAX_VISIBLE = 2;          // so at most 2 cards are 'Empty'
+    private static final int    REQUEST_ENABLE_BT = 1;    // arbitrary request code
+    private static final long   PERIOD_SCAN = 10000;      // time in ms to do scanning
+    private static final int    PERIOD_ADVERTISE = 50000; // time in ms to do advertising
     private static final String LOG_TAG = BLeDevicesActivity.class.getSimpleName();
 
     private static String        EMPTY;             // text to show on swipe card with no device
+    private static String        ERR_ADVERTISE_FAIL;// error message for advertise start failure
+    private static String        ERR_SCAN_FAIL;     // error message for scan start failed
     private static ProgressBar   PROGRESS_BAR;      // used by scan menu item in toolbar
     private ArrayList<String>    al;                // array list to store found device names
     private ArrayAdapter<String> arrayAdapter;      // array adapter for the SwipeFlingAdapterView
-    private BluetoothAdapter     mBluetoothAdapter; // the local Bluetooth adapter; scan BLE devices
+    private BluetoothAdapter     mBluetoothAdapter; // the local Bluetooth adapter
     private Handler              mHandler;          // handler to post runnable on the main thread
     private MenuItem             miScanMenuItem;    // menu item to scan for (app in) BLE device
 
@@ -64,6 +72,8 @@ public class BLeDevicesActivity extends Activity {
         ButterKnife.inject(this); // inject the annotated view objects
 
         EMPTY = getResources().getString(R.string.empty);
+        ERR_ADVERTISE_FAIL = getResources().getString(R.string.error_le_advertise_start_failure);
+        ERR_SCAN_FAIL = getResources().getString(R.string.error_le_scan_failed);
         PROGRESS_BAR = new ProgressBar(this);
 
         // for navigation button set in layout
@@ -101,12 +111,12 @@ public class BLeDevicesActivity extends Activity {
             return;
         }
         // clk: Checks if LE Advertising is supported, true only for API 21+
-/*        if (!mBluetoothAdapter.isMultipleAdvertisementSupported()) {
+        if (!mBluetoothAdapter.isMultipleAdvertisementSupported()) {
             Toast.makeText(this, R.string.error_le_peripheral_role_not_supported,Toast.LENGTH_SHORT)
                     .show();
             finish();
             return;
-        }*/
+        }
 
 
         // set up SwipeFlingAdapterView
@@ -206,14 +216,16 @@ public class BLeDevicesActivity extends Activity {
         arrayAdapter = new ArrayAdapter<>(this, R.layout.item, R.id.itemText, al);
         flingContainer.setAdapter(arrayAdapter);
 
-        // scan for nearby BLE
-        mHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                scanLeDevice(true); // underlying arrayAdapter is new at this time
-            }
-        }, 50); // small delay for menu item to be created for use as indeterminate progress icon
+//        // scan for nearby BLE
+//        mHandler.postDelayed(new Runnable() {
+//            @Override
+//            public void run() {
+//                scanLeDevice(true); // underlying arrayAdapter is new at this time
+//            }
+//        }, 50); // small delay for menu item to be created for use as indeterminate progress icon
 
+        // advertise self
+        advertiseLe(true);
     }
 
     @Override
@@ -232,13 +244,21 @@ public class BLeDevicesActivity extends Activity {
 
         // stop any ongoing scan
         scanLeDevice(false);
-
         al.clear();
         arrayAdapter = null;
+
+        // stop advertise self
+        advertiseLe(false);
     }
 
+    /**
+     * Start or stop BLE scanning for app in nearby BLE devices
+     *
+     * @param enable  Set true to start and false to stop scan.
+     */
     private void scanLeDevice(final boolean enable) {
         final BluetoothLeScanner bluetoothLeScanner = mBluetoothAdapter.getBluetoothLeScanner();
+
         if (enable) {
             // Stops scanning after a pre-defined scan period.
             mHandler.postDelayed(new Runnable() {
@@ -246,7 +266,7 @@ public class BLeDevicesActivity extends Activity {
                 public void run() {
                     scanLeDevice(false);
                 }
-            }, SCAN_PERIOD);
+            }, PERIOD_SCAN);
 
             // clear array in adapter
             al.clear();
@@ -319,6 +339,57 @@ public class BLeDevicesActivity extends Activity {
             super.onScanFailed(errorCode);
             Log.w(LOG_TAG,
                     "*** BluetoothLeScanner: onScanFailed() called, error code: " + errorCode);
+            Toast.makeText(getBaseContext(), ERR_SCAN_FAIL+" [ec="+errorCode+"]", Toast.LENGTH_LONG)
+                    .show();
+        }
+    };
+
+
+    /**
+     * Start or stop advertising this app/device to other nearby BLE devices
+     *
+     * @param enable  Set true to start and false to stop advertising.
+     */
+    private void advertiseLe(final boolean enable) {
+        final BluetoothLeAdvertiser mBluetoothLeAdvertiser = mBluetoothAdapter
+                .getBluetoothLeAdvertiser();
+        if (mBluetoothLeAdvertiser == null) return;
+
+        if (enable) {
+            AdvertiseSettings settings = new AdvertiseSettings.Builder()
+                    .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
+                    .setConnectable(true)
+                    .setTimeout(PERIOD_ADVERTISE)
+                    .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+                    .build();
+
+            AdvertiseData data = new AdvertiseData.Builder()
+                    .setIncludeDeviceName(true)
+                    .addServiceUuid(new ParcelUuid(DeviceProfile.SERVICE_UUID))
+                    .build();
+
+            mBluetoothLeAdvertiser.startAdvertising(settings, data, mAdvertiseCallback);
+
+        } else {
+            mBluetoothLeAdvertiser.stopAdvertising(mAdvertiseCallback);
+        }
+    }
+
+    /*
+     * Callback handles events from the framework describing
+     * if we were successful in starting the advertisement requests.
+     */
+    private AdvertiseCallback mAdvertiseCallback = new AdvertiseCallback() {
+        @Override
+        public void onStartSuccess(AdvertiseSettings settingsInEffect) {
+            Log.d(LOG_TAG, "* Peripheral Advertise Started.");
+        }
+
+        @Override
+        public void onStartFailure(int errorCode) {
+            Log.w(LOG_TAG, "*** Peripheral Advertise Failed: "+errorCode);
+            Toast.makeText(getBaseContext(), ERR_ADVERTISE_FAIL+" [ec="+errorCode+"]", Toast.LENGTH_LONG)
+                    .show();
         }
     };
 

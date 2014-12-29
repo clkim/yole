@@ -7,5 +7,7 @@
     <string name="ble_not_supported">Bluetooth LE is not supported</string>
     <string name="error_bluetooth_not_supported">Bluetooth is not supported</string>
     <string name="error_le_peripheral_role_not_supported">Bluetooth LE Peripheral role is not supported</string>
+    <string name="error_le_scan_failed">Failed scan for others</string>
+    <string name="error_le_advertise_start_failure">Failed advertise presence</string>
 
 </resources>
