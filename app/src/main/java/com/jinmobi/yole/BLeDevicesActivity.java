@@ -1,6 +1,8 @@
 package com.jinmobi.yole;
 
 import android.app.Activity;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
@@ -13,10 +15,12 @@ import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.ParcelUuid;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -39,8 +43,9 @@ public class BLeDevicesActivity extends Activity {
 
     private static final int    MAX_VISIBLE = 2;          // so at most 2 cards are 'Empty'
     private static final int    REQUEST_ENABLE_BT = 1;    // arbitrary request code
-    private static final long   PERIOD_SCAN = 10000;      // time in ms to do scanning
-    private static final int    PERIOD_ADVERTISE = 50000; // time in ms to do advertising
+    private static final long   PERIOD_SCAN = 11100; // scanning time ms, avoid advertising overlap
+    private static final int    PERIOD_ADVERTISE = 50000; // advertising time in ms
+    private static final String ACTION_SCAN_LE_DEVICE = "ACTION_SCAN_LE_DEVICE";
     private static final String LOG_TAG = BLeDevicesActivity.class.getSimpleName();
 
     private static String        EMPTY;             // text to show on swipe card with no device
@@ -52,6 +57,9 @@ public class BLeDevicesActivity extends Activity {
     private BluetoothAdapter     mBluetoothAdapter; // the local Bluetooth adapter
     private Handler              mHandler;          // handler to post runnable on the main thread
     private MenuItem             miScanMenuItem;    // menu item to scan for (app in) BLE device
+    private AlarmManager         alarmManager;      // to set repeating alarms to scan ble devices
+    private PendingIntent        pendingIntent;     // used in setting repeating alarm
+    private StartScanReceiver    receiver;          // broadcast receiver called by repeating alarm
 
     /**
      *  We use the excellent Swipecards library which is Copyright 2014 Dionysis Lorentzos.
@@ -192,6 +200,29 @@ public class BLeDevicesActivity extends Activity {
             }
         });
 
+        // Set a repeating 'wakeup' alarm mostly so app is in background and advertising goes on;
+        // also to do scans for 'recognizable' BLE devices. (Cancel repeating alarm in onDestroy.)
+        Intent intent = new Intent(ACTION_SCAN_LE_DEVICE);
+        pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT);
+        // Alarm period should include scan time plus desired advertising time
+        long alarmPeriodMs = PERIOD_SCAN + PERIOD_ADVERTISE;
+        alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+
+        alarmManager.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + alarmPeriodMs,
+                alarmPeriodMs,
+                pendingIntent);
+
+        // Set up broadcast receiver to have access to activity object
+        receiver = new StartScanReceiver();
+        // Inject this activity into receiver in order to call method to scan BLE devices
+        receiver.setBLeDevicesActivity(this); // this is the key step
+        // Register receiver programmatically here instead of specifying in manifest
+        IntentFilter intentFilter = new IntentFilter(ACTION_SCAN_LE_DEVICE);
+        registerReceiver(receiver, intentFilter);
+
+
         // for use in scanning
         mHandler = new Handler();
     }
@@ -216,16 +247,14 @@ public class BLeDevicesActivity extends Activity {
         arrayAdapter = new ArrayAdapter<>(this, R.layout.item, R.id.itemText, al);
         flingContainer.setAdapter(arrayAdapter);
 
-//        // scan for nearby BLE
-//        mHandler.postDelayed(new Runnable() {
-//            @Override
-//            public void run() {
-//                scanLeDevice(true); // underlying arrayAdapter is new at this time
-//            }
-//        }, 50); // small delay for menu item to be created for use as indeterminate progress icon
-
-        // advertise self
-        advertiseLe(true);
+        // do first scan in this life-cycle for recognizable BLE devices
+        // the method also starts BLE advertise after scan is stopped
+         mHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                scanLeDevice(true); // underlying arrayAdapter is new at this time
+            }
+        }, 50); // seems need small delay to create menu item; used for indeterminate progress icon
     }
 
     @Override
@@ -245,22 +274,47 @@ public class BLeDevicesActivity extends Activity {
         // stop any ongoing scan
         scanLeDevice(false);
         al.clear();
-        arrayAdapter = null;
+        arrayAdapter = null; //TODO safer to remove to reduce risk of NPE?
 
-        // stop advertise self
+        // don't stop advertise here because we want that to continue in background, do in onDestroy
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+
+        // stop any ongoing advertise
         advertiseLe(false);
+
+        if (alarmManager != null)
+            alarmManager.cancel(pendingIntent);
+
+        unregisterReceiver(receiver);
     }
 
     /**
-     * Start or stop BLE scanning for app in nearby BLE devices
+     * Start or stop BLE scanning for nearby recognizable BLE devices.
+     * Since this device cannot both scan and advertise at same time,
+     * this method does stopping advertise before starting scan.
+     * It also does starting advertise after scan is stopped.
+     *
+     * Method is called by a broadcast receiver (activated by repeating
+     * alarms), so must be package-private.
+     *
+     * Note: This method is one of two place where we start advertise
+     * (after stop scan either in delayed post or explicit stop scan).
+     * The other place is in StartScanReceiver when screen is off or
+     * in power save mode and we don't call this method, so we make
+     * sure that advertising is started.
+     *
      *
      * @param enable  Set true to start and false to stop scan.
      */
-    private void scanLeDevice(final boolean enable) {
+    void scanLeDevice(final boolean enable) {
         final BluetoothLeScanner bluetoothLeScanner = mBluetoothAdapter.getBluetoothLeScanner();
 
         if (enable) {
-            // Stops scanning after a pre-defined scan period.
+            // post delayed job to stop scanning after a pre-defined scan period
             mHandler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
@@ -268,19 +322,26 @@ public class BLeDevicesActivity extends Activity {
                 }
             }, PERIOD_SCAN);
 
+            // first, stop advertising
+            advertiseLe(false);
+
             // clear array in adapter
             al.clear();
-            // TBD: call stop advertising
+
+            // now start scan
             bluetoothLeScanner.startScan(scScanCallback);
             // set scan menu icon indicator on
-            if (miScanMenuItem != null) // defensive, see NPE if called without delay from onResume
+            if (miScanMenuItem != null) // defensive, seen NPE if called without delay from onResume
                 miScanMenuItem.setActionView(PROGRESS_BAR);
 
         } else {
+            // stop scan
             bluetoothLeScanner.stopScan(scScanCallback);
             // set scan menu icon indicator off
             miScanMenuItem.setActionView(null);
-            // TBD: call start advertising
+
+            // assume stopScan is synchronous, so can start advertising
+            advertiseLe(true);
         }
     }
 
@@ -350,7 +411,7 @@ public class BLeDevicesActivity extends Activity {
      *
      * @param enable  Set true to start and false to stop advertising.
      */
-    private void advertiseLe(final boolean enable) {
+    void advertiseLe(final boolean enable) {
         final BluetoothLeAdvertiser mBluetoothLeAdvertiser = mBluetoothAdapter
                 .getBluetoothLeAdvertiser();
         if (mBluetoothLeAdvertiser == null) return;
@@ -359,8 +420,8 @@ public class BLeDevicesActivity extends Activity {
             AdvertiseSettings settings = new AdvertiseSettings.Builder()
                     .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
                     .setConnectable(true)
-                    .setTimeout(PERIOD_ADVERTISE)
-                    .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+                    .setTimeout(0) // no timeout needed, advertise stopped by periodic scanning
+                    .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
                     .build();
 
             AdvertiseData data = new AdvertiseData.Builder()
@@ -420,4 +481,5 @@ public class BLeDevicesActivity extends Activity {
                 return super.onOptionsItemSelected(item);
         }
     }
+
 }
