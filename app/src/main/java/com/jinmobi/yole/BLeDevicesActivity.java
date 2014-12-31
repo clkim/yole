@@ -5,7 +5,13 @@ import android.app.AlarmManager;
 import android.app.PendingIntent;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattServer;
+import android.bluetooth.BluetoothGattServerCallback;
+import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.AdvertiseCallback;
 import android.bluetooth.le.AdvertiseData;
 import android.bluetooth.le.AdvertiseSettings;
@@ -21,6 +27,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.ParcelUuid;
 import android.os.SystemClock;
+import android.speech.tts.TextToSpeech;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -60,6 +67,7 @@ public class BLeDevicesActivity extends Activity {
     private AlarmManager         alarmManager;      // to set repeating alarms to scan ble devices
     private PendingIntent        pendingIntent;     // used in setting repeating alarm
     private StartScanReceiver    receiver;          // broadcast receiver called by repeating alarm
+    private BluetoothGattServer  mGattServer;
 
     /**
      *  We use the excellent Swipecards library which is Copyright 2014 Dionysis Lorentzos.
@@ -225,6 +233,10 @@ public class BLeDevicesActivity extends Activity {
 
         // for use in scanning
         mHandler = new Handler();
+
+
+        // Gatt Server to perform Peripheral role
+        mGattServer = bluetoothManager.openGattServer(this, mGattServerCallback);
     }
 
     static void makeToast(Context ctx, String s){
@@ -242,10 +254,12 @@ public class BLeDevicesActivity extends Activity {
             startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
         }
 
+
         // Initializes the array adapter for the SwipeFlingAdapterView
         al = new ArrayList<>();
         arrayAdapter = new ArrayAdapter<>(this, R.layout.item, R.id.itemText, al);
         flingContainer.setAdapter(arrayAdapter);
+
 
         // do first scan in this life-cycle for recognizable BLE devices
         // the method also starts BLE advertise after scan is stopped
@@ -255,6 +269,12 @@ public class BLeDevicesActivity extends Activity {
                 scanLeDevice(true); // underlying arrayAdapter is new at this time
             }
         }, 50); // seems need small delay to create menu item; used for indeterminate progress icon
+
+
+        // initialize the Gatt Server
+        BluetoothGattService service =new BluetoothGattService(DeviceProfile.SERVICE_UUID,
+                BluetoothGattService.SERVICE_TYPE_PRIMARY);
+        mGattServer.addService(service);
     }
 
     @Override
@@ -277,6 +297,8 @@ public class BLeDevicesActivity extends Activity {
         arrayAdapter = null; //TODO safer to remove to reduce risk of NPE?
 
         // don't stop advertise here because we want that to continue in background, do in onDestroy
+
+        // don't close Gatt Server here because we want to get connections in background
     }
 
     @Override
@@ -285,6 +307,8 @@ public class BLeDevicesActivity extends Activity {
 
         // stop any ongoing advertise
         advertiseLe(false);
+
+        mGattServer.close();
 
         if (alarmManager != null)
             alarmManager.cancel(pendingIntent);
@@ -451,6 +475,60 @@ public class BLeDevicesActivity extends Activity {
             Log.w(LOG_TAG, "*** Peripheral Advertise Failed: "+errorCode);
             Toast.makeText(getBaseContext(), ERR_ADVERTISE_FAIL+" [ec="+errorCode+"]", Toast.LENGTH_LONG)
                     .show();
+        }
+    };
+
+
+    /*
+     * Callback handles all incoming requests from GATT clients.
+     * From connections to read/write requests.
+     */
+    private BluetoothGattServerCallback mGattServerCallback = new BluetoothGattServerCallback() {
+        @Override
+        public void onConnectionStateChange(BluetoothDevice device, int status, int newState) {
+            super.onConnectionStateChange(device, status, newState);
+            Log.d(LOG_TAG, "onConnectionStateChange " + " status:"+status + " newState:"+newState);
+
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                // TODO do text to speech and/or send notification message if possible??
+                Log.i(LOG_TAG, "*** GOT IT! Say: You've Been Yoble'd");
+
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                // we don't do anything here for now;
+            }
+        }
+
+        @Override
+        public void onCharacteristicReadRequest(BluetoothDevice device,
+                                                int requestId,
+                                                int offset,
+                                                BluetoothGattCharacteristic characteristic) {
+            super.onCharacteristicReadRequest(device, requestId, offset, characteristic);
+            Log.d(LOG_TAG, "*** Hmm... Unexpected onCharacteristicReadRequest "
+                    + characteristic.getUuid().toString());
+            /*
+             * Unless the characteristic supports WRITE_NO_RESPONSE,
+             * always send a response back for any request.
+             */
+            mGattServer.sendResponse(device,
+                    requestId,
+                    BluetoothGatt.GATT_FAILURE,
+                    0,
+                    null);
+        }
+
+        @Override
+        public void onCharacteristicWriteRequest(BluetoothDevice device,
+                                                 int requestId,
+                                                 BluetoothGattCharacteristic characteristic,
+                                                 boolean preparedWrite,
+                                                 boolean responseNeeded,
+                                                 int offset,
+                                                 byte[] value) {
+            super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite,
+                    responseNeeded, offset, value);
+            Log.d(LOG_TAG, "*** Hmm... Unexpected onCharacteristicWriteRequest "
+                    + characteristic.getUuid().toString());
         }
     };
 
