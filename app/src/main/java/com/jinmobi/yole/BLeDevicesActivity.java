@@ -6,7 +6,7 @@ import android.app.PendingIntent;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
-import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattServer;
 import android.bluetooth.BluetoothGattServerCallback;
 import android.bluetooth.BluetoothGattService;
@@ -27,13 +27,16 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.ParcelUuid;
 import android.os.SystemClock;
-import android.speech.tts.TextToSpeech;
 import android.util.Log;
+import android.util.Pair;
+import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.Toolbar;
 
@@ -50,24 +53,28 @@ public class BLeDevicesActivity extends Activity {
 
     private static final int    MAX_VISIBLE = 2;          // so at most 2 cards are 'Empty'
     private static final int    REQUEST_ENABLE_BT = 1;    // arbitrary request code
-    private static final long   PERIOD_SCAN = 11100; // scanning time ms, avoid advertising overlap
+    private static final long   PERIOD_SCAN = 11100;      // scanning ms, avoid overlap advertising
     private static final int    PERIOD_ADVERTISE = 50000; // advertising time in ms
-    private static final String ACTION_SCAN_LE_DEVICE = "ACTION_SCAN_LE_DEVICE";
+    private static final String ACTION_SCAN_LE_DEVICE = "ACTION_SCAN_LE_DEVICE"; // for receiver
     private static final String LOG_TAG = BLeDevicesActivity.class.getSimpleName();
+    private static String       EMPTY;               // text to show on swipe card with no device
+    private static String       ERR_ADVERTISE_FAIL;  // error message for advertise start failure
+    private static String       ERR_SCAN_FAIL;       // error message for scan start failed
+    private static ProgressBar  PROGRESS_BAR;        // used by scan menu item in toolbar
+    private List<Pair<String, String>>
+                                  al;                // list to store found devices <name, address>
+    private ArrayAdapter<Pair<String, String>>
+                                  arrayAdapter;      // for SwipeFlingAdapterView
+    private BluetoothAdapter      mBluetoothAdapter; // the local Bluetooth adapter
+    private Handler               mHandler;          // handler to post runnable on the main thread
+    private MenuItem              miScanMenuItem;    // menu item to scan for (app in) BLE device
+    private AlarmManager          alarmManager;      // to set repeating alarms to scan ble devices
+    private PendingIntent         pendingIntent;     // used in setting repeating alarm
+    private BluetoothLeScanner    bluetoothLeScanner;
+    private BluetoothLeAdvertiser mBluetoothLeAdvertiser;
+    private StartScanReceiver     receiver;          // broadcast receiver called by repeating alarm
+    private BluetoothGattServer   mGattServer;       // for peripheral role
 
-    private static String        EMPTY;             // text to show on swipe card with no device
-    private static String        ERR_ADVERTISE_FAIL;// error message for advertise start failure
-    private static String        ERR_SCAN_FAIL;     // error message for scan start failed
-    private static ProgressBar   PROGRESS_BAR;      // used by scan menu item in toolbar
-    private ArrayList<String>    al;                // array list to store found device names
-    private ArrayAdapter<String> arrayAdapter;      // array adapter for the SwipeFlingAdapterView
-    private BluetoothAdapter     mBluetoothAdapter; // the local Bluetooth adapter
-    private Handler              mHandler;          // handler to post runnable on the main thread
-    private MenuItem             miScanMenuItem;    // menu item to scan for (app in) BLE device
-    private AlarmManager         alarmManager;      // to set repeating alarms to scan ble devices
-    private PendingIntent        pendingIntent;     // used in setting repeating alarm
-    private StartScanReceiver    receiver;          // broadcast receiver called by repeating alarm
-    private BluetoothGattServer  mGattServer;
 
     /**
      *  We use the excellent Swipecards library which is Copyright 2014 Dionysis Lorentzos.
@@ -77,8 +84,12 @@ public class BLeDevicesActivity extends Activity {
      */
     @InjectView(R.id.frame) SwipeFlingAdapterView flingContainer;
 
-
     @InjectView(R.id.toolbar) Toolbar toolbar;
+
+
+    private static class ViewHolder {
+        TextView textView;
+    }
 
 
     @Override
@@ -130,8 +141,6 @@ public class BLeDevicesActivity extends Activity {
         if (!mBluetoothAdapter.isMultipleAdvertisementSupported()) {
             Toast.makeText(this, R.string.error_le_peripheral_role_not_supported,Toast.LENGTH_SHORT)
                     .show();
-            finish();
-            return;
         }
 
 
@@ -174,13 +183,13 @@ public class BLeDevicesActivity extends Activity {
                 // also see related hack in ScanCallBack.onScanResult().
                 // TODO: look at fixing the library if possible
                 if (itemsInAdapter == 0 && al != null) { // defensive check for possible NPE
-                    al.add(EMPTY);
+                    al.add(new Pair<>(EMPTY, ""));
                     Log.d("LIST", "notified 0");
                 }
 
                 // add an 'Empty' card
                 if (al != null && arrayAdapter != null) { // defensive check for possible NPE
-                    al.add(EMPTY);
+                    al.add(new Pair<>(EMPTY, ""));
                     arrayAdapter.notifyDataSetChanged();
                     Log.d("LIST", "notified");
                 }
@@ -199,12 +208,16 @@ public class BLeDevicesActivity extends Activity {
 
         // Optionally add an OnItemClickListener
         flingContainer.setOnItemClickListener(new SwipeFlingAdapterView.OnItemClickListener() {
-            @Override
+            @Override @SuppressWarnings("unchecked")
             public void onItemClicked(int itemPosition, Object dataObject) {
-                if ("Empty".equals(dataObject))
+                if (EMPTY.equals(((Pair<String, String>)dataObject).first))
                     makeToast(BLeDevicesActivity.this, "Clicked on Empty!");
-                else
+                else {
+                    String address = ((Pair<String, String>) dataObject).second;
+                    BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
+                    device.connectGatt(getBaseContext(), false, mGattCallback);
                     makeToast(BLeDevicesActivity.this, "Clicked!");
+                }
             }
         });
 
@@ -235,7 +248,14 @@ public class BLeDevicesActivity extends Activity {
         mHandler = new Handler();
 
 
+        // BLE Scanner
+        bluetoothLeScanner = mBluetoothAdapter.getBluetoothLeScanner();
+        // BLE Advertiser
+        mBluetoothLeAdvertiser = mBluetoothAdapter.getBluetoothLeAdvertiser();
+
+
         // Gatt Server to perform Peripheral role
+        // null if no BLE peripheral role e.g. Nexus 4,5,7
         mGattServer = bluetoothManager.openGattServer(this, mGattServerCallback);
     }
 
@@ -257,7 +277,24 @@ public class BLeDevicesActivity extends Activity {
 
         // Initializes the array adapter for the SwipeFlingAdapterView
         al = new ArrayList<>();
-        arrayAdapter = new ArrayAdapter<>(this, R.layout.item, R.id.itemText, al);
+        arrayAdapter = new ArrayAdapter<Pair<String, String>>(this, 0, 0, al) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                Pair<String, String> pair = getItem(position);
+                ViewHolder viewHolder; // private static nested class
+                if (convertView == null) {
+                    viewHolder = new ViewHolder();
+                    convertView = LayoutInflater.from(getContext())
+                            .inflate(R.layout.item, parent, false);
+                    viewHolder.textView = (TextView) convertView.findViewById(R.id.itemText);
+                    convertView.setTag(viewHolder);
+                } else {
+                    viewHolder = (ViewHolder) convertView.getTag();
+                }
+                viewHolder.textView.setText(pair.first);
+                return convertView;
+            }
+        };
         flingContainer.setAdapter(arrayAdapter);
 
 
@@ -274,7 +311,8 @@ public class BLeDevicesActivity extends Activity {
         // initialize the Gatt Server
         BluetoothGattService service =new BluetoothGattService(DeviceProfile.SERVICE_UUID,
                 BluetoothGattService.SERVICE_TYPE_PRIMARY);
-        mGattServer.addService(service);
+        if (mGattServer != null)  // null if no BLE peripheral role e.g. Nexus 4,5,7
+            mGattServer.addService(service);
     }
 
     @Override
@@ -308,7 +346,8 @@ public class BLeDevicesActivity extends Activity {
         // stop any ongoing advertise
         advertiseLe(false);
 
-        mGattServer.close();
+        if (mGattServer != null) // null if no BLE peripheral role e.g. Nexus 4,5,7
+            mGattServer.close();
 
         if (alarmManager != null)
             alarmManager.cancel(pendingIntent);
@@ -317,26 +356,22 @@ public class BLeDevicesActivity extends Activity {
     }
 
     /**
-     * Start or stop BLE scanning for nearby recognizable BLE devices.
-     * Since this device cannot both scan and advertise at same time,
-     * this method does stopping advertise before starting scan.
-     * It also does starting advertise after scan is stopped.
+     * Start or stop BLE scanning for nearby recognizable BLE devices;
+     * also start BLE advertising of this device after stopping scan
      *
-     * Method is called by a broadcast receiver (activated by repeating
-     * alarms), so must be package-private.
+     * Although device cannot both scan and advertise at same time, we should not stop advertising
+     * before starting scan because of reason stated in the comment in the ble advertise method.
+     * We initially start advertising after scan is first stopped, and defensively re-start
+     * advertising on subsequent stopping of scan; see comment in the ble advertise method about
+     * what seems to be a benign ADVERTISE_FAILED_ALREADY_STARTED error code 3 seen in logcat.
      *
-     * Note: This method is one of two place where we start advertise
-     * (after stop scan either in delayed post or explicit stop scan).
-     * The other place is in StartScanReceiver when screen is off or
-     * in power save mode and we don't call this method, so we make
-     * sure that advertising is started.
+     * Method is called by a broadcast receiver (activated by repeating alarms), so must be
+     * package-private.
      *
      *
      * @param enable  Set true to start and false to stop scan.
      */
     void scanLeDevice(final boolean enable) {
-        final BluetoothLeScanner bluetoothLeScanner = mBluetoothAdapter.getBluetoothLeScanner();
-
         if (enable) {
             // post delayed job to stop scanning after a pre-defined scan period
             mHandler.postDelayed(new Runnable() {
@@ -346,8 +381,7 @@ public class BLeDevicesActivity extends Activity {
                 }
             }, PERIOD_SCAN);
 
-            // first, stop advertising
-            advertiseLe(false);
+            // don't stop advertise here; that changes device hardware (MAC) address seen by others
 
             // clear array in adapter
             al.clear();
@@ -377,18 +411,18 @@ public class BLeDevicesActivity extends Activity {
             // clk: a hack to remove any extraneous EMPTY cards
             //  related to hack in SwipeFlingAdapterView fling listener's onAdapterAboutToEmpty()
             while ( al.size()==2 &&
-                    (EMPTY.equals(al.get(0)) || EMPTY.equals(al.get(1))) ) {
-                if(EMPTY.equals(al.get(1))) {
+                    (EMPTY.equals(al.get(0).first) || EMPTY.equals(al.get(1).first)) ) {
+                if(EMPTY.equals(al.get(1).first)) {
                     al.remove(1); // remove first element at 0 index last
                     Log.d(LOG_TAG, "removed get(1) EMPTY");
                 }
-                if(EMPTY.equals(al.get(0))) {
+                if(EMPTY.equals(al.get(0).first)) {
                     al.remove(0);
                     Log.d(LOG_TAG, "removed get(0) EMPTY");
                 }
             }
             // get result to put on array adapter for swipe cards
-            BluetoothDevice device = result.getDevice();
+            final BluetoothDevice device = result.getDevice();
             final String resultDeviceName;
             if (device.getName() != null)
                 resultDeviceName = device.getName();
@@ -401,8 +435,10 @@ public class BLeDevicesActivity extends Activity {
                     // defensive check against NPE seen in testing with orientation change
                     if (al != null && arrayAdapter != null) {
                         // update the arraylist and notify adapter of change
-                        if (!al.contains(resultDeviceName)) {
-                            al.add(resultDeviceName);
+                        Pair<String, String> pair =
+                                new Pair<>(resultDeviceName, device.getAddress());
+                        if (!al.contains(pair)) {
+                            al.add(pair);
                             arrayAdapter.notifyDataSetChanged();
                             Log.d(LOG_TAG, "added " + resultDeviceName);
                         }
@@ -431,13 +467,25 @@ public class BLeDevicesActivity extends Activity {
 
 
     /**
-     * Start or stop advertising this app/device to other nearby BLE devices
+     * Start or stop advertising this device to other nearby BLE devices
+     *
+     * We should not stop advertise before starting scan because doing so has been observed
+     * to change the device hardware (MAC) address seen by others doing scan for BLE devices.
+     *
+     * When we defensively re-start advertising, we see error code 3 in logcat
+     * (ADVERTISE_FAILED_ALREADY_STARTED) returned by onStartFailure in the advertise callback,
+     * but it seems to be benign.
+     *
+     * We start, and defensively re-start, advertising after we stop ble scan, and also in the
+     * code where we periodically start ble scan.
+     *
+     * Method is called by a broadcast receiver (activated by repeating alarms), so must be
+     * package-private.
+     *
      *
      * @param enable  Set true to start and false to stop advertising.
      */
     void advertiseLe(final boolean enable) {
-        final BluetoothLeAdvertiser mBluetoothLeAdvertiser = mBluetoothAdapter
-                .getBluetoothLeAdvertiser();
         if (mBluetoothLeAdvertiser == null) return;
 
         if (enable) {
@@ -480,6 +528,42 @@ public class BLeDevicesActivity extends Activity {
 
 
     /*
+     * Callback handles GATT client events, such as results from connecting
+     * (or reading or writing a characteristic value on the server).
+     */
+    private BluetoothGattCallback mGattCallback = new BluetoothGattCallback() {
+        @Override
+        public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
+            super.onConnectionStateChange(gatt, status, newState);
+            Log.d(LOG_TAG, "BluetoothGattCallback onConnectionStateChange "
+                    + " status:" + status + " newState:" + newState);
+
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                gatt.discoverServices();
+            }
+            if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                gatt.close();
+            }
+        }
+
+        @Override
+        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+            super.onServicesDiscovered(gatt, status);
+            //Log.d(LOG_TAG, "onServicesDiscovered:");
+            // confirm the correct service is available
+            BluetoothGattService ourService = gatt.getService(DeviceProfile.SERVICE_UUID);
+            if (ourService != null) {
+                // ok, we've connected successfully with remote server device, can disconnect now
+                Log.d(LOG_TAG, "* made connection and found our service, disconnecting gatt");
+                gatt.disconnect();
+                // do gatt.close() in onConnectionStateChange()
+                // otherwise see NPE BluetoothGattCallback.onConnectionStateChange
+            }
+        }
+    };
+
+
+    /*
      * Callback handles all incoming requests from GATT clients.
      * From connections to read/write requests.
      */
@@ -487,48 +571,14 @@ public class BLeDevicesActivity extends Activity {
         @Override
         public void onConnectionStateChange(BluetoothDevice device, int status, int newState) {
             super.onConnectionStateChange(device, status, newState);
-            Log.d(LOG_TAG, "onConnectionStateChange " + " status:"+status + " newState:"+newState);
+            Log.d(LOG_TAG, "BluetoothGattServerCallback onConnectionStateChange "
+                    + " status:" + status + " newState:" + newState);
 
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 // TODO do text to speech and/or send notification message if possible??
-                Log.i(LOG_TAG, "*** GOT IT! Say: You've Been Yoble'd");
+                Log.d(LOG_TAG, "***** GOT IT! Say: You've Been Yoble'd, "+"device:"+device.getName());
 
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                // we don't do anything here for now;
             }
-        }
-
-        @Override
-        public void onCharacteristicReadRequest(BluetoothDevice device,
-                                                int requestId,
-                                                int offset,
-                                                BluetoothGattCharacteristic characteristic) {
-            super.onCharacteristicReadRequest(device, requestId, offset, characteristic);
-            Log.d(LOG_TAG, "*** Hmm... Unexpected onCharacteristicReadRequest "
-                    + characteristic.getUuid().toString());
-            /*
-             * Unless the characteristic supports WRITE_NO_RESPONSE,
-             * always send a response back for any request.
-             */
-            mGattServer.sendResponse(device,
-                    requestId,
-                    BluetoothGatt.GATT_FAILURE,
-                    0,
-                    null);
-        }
-
-        @Override
-        public void onCharacteristicWriteRequest(BluetoothDevice device,
-                                                 int requestId,
-                                                 BluetoothGattCharacteristic characteristic,
-                                                 boolean preparedWrite,
-                                                 boolean responseNeeded,
-                                                 int offset,
-                                                 byte[] value) {
-            super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite,
-                    responseNeeded, offset, value);
-            Log.d(LOG_TAG, "*** Hmm... Unexpected onCharacteristicWriteRequest "
-                    + characteristic.getUuid().toString());
         }
     };
 
