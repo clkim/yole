@@ -27,6 +27,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.ParcelUuid;
 import android.os.SystemClock;
+import android.speech.tts.TextToSpeech;
 import android.util.Log;
 import android.util.Pair;
 import android.view.LayoutInflater;
@@ -44,6 +45,7 @@ import com.lorentzos.flingswipe.SwipeFlingAdapterView;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import butterknife.ButterKnife;
 import butterknife.InjectView;
@@ -52,11 +54,13 @@ import butterknife.InjectView;
 public class BLeDevicesActivity extends Activity {
 
     private static final int    MAX_VISIBLE = 2;          // so at most 2 cards are 'Empty'
-    private static final int    REQUEST_ENABLE_BT = 1;    // arbitrary request code
+    private static final int    REQUEST_ENABLE_BT = 11;   // arbitrary request id code
     private static final long   PERIOD_SCAN = 11100;      // scanning ms, avoid overlap advertising
     private static final int    PERIOD_ADVERTISE = 50000; // advertising time in ms
-    private static final String ACTION_SCAN_LE_DEVICE = "ACTION_SCAN_LE_DEVICE"; // for receiver
-    private static final String LOG_TAG = BLeDevicesActivity.class.getSimpleName();
+    private static final int    TTS_REQUEST_CODE = 22;    // arbitrary request id code
+    private static final String ACTION_SCAN_LE_DEVICE = "ACTION_SCAN_LE_DEVICE";    // for receiver
+    private static final String YOBLE   = "Yoble";                                  // what we say
+    private static final String LOG_TAG = BLeDevicesActivity.class.getSimpleName(); // for logcat
     private static String       EMPTY;               // text to show on swipe card with no device
     private static String       ERR_ADVERTISE_FAIL;  // error message for advertise start failure
     private static String       ERR_SCAN_FAIL;       // error message for scan start failed
@@ -73,7 +77,9 @@ public class BLeDevicesActivity extends Activity {
     private BluetoothLeScanner    bluetoothLeScanner;
     private BluetoothLeAdvertiser mBluetoothLeAdvertiser;
     private StartScanReceiver     receiver;          // broadcast receiver called by repeating alarm
+    private BluetoothGatt         bgConnectedGatt;   // for central role
     private BluetoothGattServer   mGattServer;       // for peripheral role
+    private TextToSpeech          ttsTextToSpeech;
 
 
     /**
@@ -137,11 +143,27 @@ public class BLeDevicesActivity extends Activity {
             finish();
             return;
         }
-        // clk: Checks if LE Advertising is supported, true only for API 21+
+
+        // clk: Checks if LE Advertising is supported, true only for API 21+ and Nexus 6+/9+
+        //  we allow Nexus 4/5/7 in Central role to do ble scan for nearby devices with this app
+        //  in that case, no Gatt Server is instantiated,
+        //  and we check for null Gatt Server as well as null BLE Advertiser
         if (!mBluetoothAdapter.isMultipleAdvertisementSupported()) {
-            Toast.makeText(this, R.string.error_le_peripheral_role_not_supported,Toast.LENGTH_SHORT)
+            Toast.makeText(this, R.string.error_le_peripheral_role_not_supported,Toast.LENGTH_LONG)
                     .show();
+
+        } else {
+
+            // Gatt Server to perform Peripheral role
+            mGattServer = bluetoothManager
+                    .openGattServer(getApplicationContext(), mGattServerCallback);
         }
+
+        // BLE Scanner
+        bluetoothLeScanner = mBluetoothAdapter.getBluetoothLeScanner();
+
+        // BLE Advertiser
+        mBluetoothLeAdvertiser = mBluetoothAdapter.getBluetoothLeAdvertiser();
 
 
         // set up SwipeFlingAdapterView
@@ -206,7 +228,7 @@ public class BLeDevicesActivity extends Activity {
             }
         });
 
-        // Optionally add an OnItemClickListener
+        // add an OnItemClickListener
         flingContainer.setOnItemClickListener(new SwipeFlingAdapterView.OnItemClickListener() {
             @Override @SuppressWarnings("unchecked")
             public void onItemClicked(int itemPosition, Object dataObject) {
@@ -215,7 +237,7 @@ public class BLeDevicesActivity extends Activity {
                 else {
                     String address = ((Pair<String, String>) dataObject).second;
                     BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
-                    device.connectGatt(getBaseContext(), false, mGattCallback);
+                    bgConnectedGatt = device.connectGatt(getApplicationContext(), false, mGattCallback);
                     makeToast(BLeDevicesActivity.this, "Clicked!");
                 }
             }
@@ -248,15 +270,17 @@ public class BLeDevicesActivity extends Activity {
         mHandler = new Handler();
 
 
-        // BLE Scanner
-        bluetoothLeScanner = mBluetoothAdapter.getBluetoothLeScanner();
-        // BLE Advertiser
-        mBluetoothLeAdvertiser = mBluetoothAdapter.getBluetoothLeAdvertiser();
-
-
-        // Gatt Server to perform Peripheral role
-        // null if no BLE peripheral role e.g. Nexus 4,5,7
-        mGattServer = bluetoothManager.openGattServer(this, mGattServerCallback);
+        // Text to Speech
+        mHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                // check there is data for language installed, for TTS
+                Intent checkTtsIntent = new Intent();
+                checkTtsIntent.setAction(TextToSpeech.Engine.ACTION_CHECK_TTS_DATA);
+                startActivityForResult(checkTtsIntent, TTS_REQUEST_CODE);
+                // do setup in onActivityResult(), look for the request code
+            }
+        }, 100); // to avoid NPE MenuItem.setActionView(View) in onResume's delayed post: scanLeScan
     }
 
     static void makeToast(Context ctx, String s){
@@ -300,12 +324,12 @@ public class BLeDevicesActivity extends Activity {
 
         // do first scan in this life-cycle for recognizable BLE devices
         // the method also starts BLE advertise after scan is stopped
-         mHandler.postDelayed(new Runnable() {
+        mHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
                 scanLeDevice(true); // underlying arrayAdapter is new at this time
             }
-        }, 50); // seems need small delay to create menu item; used for indeterminate progress icon
+        }, 50); // saw NPE; so wait for creation of menu item, used in indeterminate progress icon
 
 
         // initialize the Gatt Server
@@ -322,6 +346,33 @@ public class BLeDevicesActivity extends Activity {
             finish();
             return;
         }
+
+        // Text to speech setup
+        if (requestCode == TTS_REQUEST_CODE) {
+            if (resultCode == TextToSpeech.Engine.CHECK_VOICE_DATA_PASS) {
+                // success, create the TTS instance
+                //  seems need to use getApplicationContext() instead of mContext to avoid Error log: ...MainActivity has leaked ServiceConnection android.speech.tts.TextToSpeech$Connection@41e93920 that was originally bound here
+                //  http://stackoverflow.com/questions/19653223/texttospeech-and-memory-leak
+                ttsTextToSpeech = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
+                    @Override
+                    public void onInit(int i) {
+                        if (i == TextToSpeech.SUCCESS) {
+                            ttsTextToSpeech.setLanguage(Locale.getDefault());
+                        } else {
+                            Log.e(TextToSpeech.OnInitListener.class.getSimpleName(), "Snap! Text-to-speech onInit returned FAIL");
+                        }
+                    }
+                });
+
+            } else {
+                // missing data for language, so install it
+                Intent installIntent = new Intent();
+                installIntent.setAction(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA);
+                startActivity(installIntent);
+            }
+            return;
+        }
+
         super.onActivityResult(requestCode, resultCode, data);
     }
 
@@ -332,7 +383,6 @@ public class BLeDevicesActivity extends Activity {
         // stop any ongoing scan
         scanLeDevice(false);
         al.clear();
-        arrayAdapter = null; //TODO safer to remove to reduce risk of NPE?
 
         // don't stop advertise here because we want that to continue in background, do in onDestroy
 
@@ -353,6 +403,13 @@ public class BLeDevicesActivity extends Activity {
             alarmManager.cancel(pendingIntent);
 
         unregisterReceiver(receiver);
+
+        // Text to Speech
+        if (ttsTextToSpeech != null) {
+            ttsTextToSpeech.stop();
+            // release resources
+            ttsTextToSpeech.shutdown();
+        }
     }
 
     /**
@@ -396,7 +453,8 @@ public class BLeDevicesActivity extends Activity {
             // stop scan
             bluetoothLeScanner.stopScan(scScanCallback);
             // set scan menu icon indicator off
-            miScanMenuItem.setActionView(null);
+            if (miScanMenuItem != null) // needed, saw NPE when doing rapid orientation change test
+                miScanMenuItem.setActionView(null);
 
             // assume stopScan is synchronous, so can start advertising
             advertiseLe(true);
@@ -539,25 +597,14 @@ public class BLeDevicesActivity extends Activity {
                     + " status:" + status + " newState:" + newState);
 
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                gatt.discoverServices();
+                //gatt.discoverServices(); // normally called here, but not needed by our use case
+                bgConnectedGatt.disconnect(); // note: gatt==bgConnectedGatt (same reference)
+
             }
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                gatt.close();
-            }
-        }
-
-        @Override
-        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-            super.onServicesDiscovered(gatt, status);
-            //Log.d(LOG_TAG, "onServicesDiscovered:");
-            // confirm the correct service is available
-            BluetoothGattService ourService = gatt.getService(DeviceProfile.SERVICE_UUID);
-            if (ourService != null) {
-                // ok, we've connected successfully with remote server device, can disconnect now
-                Log.d(LOG_TAG, "* made connection and found our service, disconnecting gatt");
-                gatt.disconnect();
-                // do gatt.close() in onConnectionStateChange()
-                // otherwise see NPE BluetoothGattCallback.onConnectionStateChange
+                // cannot do gatt.close() after disconnect() in STATE_CONNECTED if-branch
+                //  otherwise see NPE BluetoothGattCallback.onConnectionStateChange
+                bgConnectedGatt.close();
             }
         }
     };
@@ -575,9 +622,15 @@ public class BLeDevicesActivity extends Activity {
                     + " status:" + status + " newState:" + newState);
 
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                // TODO do text to speech and/or send notification message if possible??
-                Log.d(LOG_TAG, "***** GOT IT! Say: You've Been Yoble'd, "+"device:"+device.getName());
+                ttsTextToSpeech.speak(YOBLE, TextToSpeech.QUEUE_FLUSH, null, "utteranceId");
+                // TODO do send notification if possible when in background with screen off??
+                Log.d(LOG_TAG, "***** YOBLE from "+"device address:"+device.getAddress());
 
+                // Need to cancel connection explicitly here, otherwise see disconnect take 30-60s
+                //  even though gatt client calls gatt.disconnect() once connection is established;
+                //  cancelling allows us to do another device.connectGatt() almost immediately
+                mGattServer.cancelConnection(device);
+                Log.d(LOG_TAG, "* cancelConnection to device");
             }
         }
     };
