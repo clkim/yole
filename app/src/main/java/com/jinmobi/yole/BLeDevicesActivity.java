@@ -59,14 +59,17 @@ public class BLeDevicesActivity extends Activity {
     private static final int    PERIOD_ADVERTISE = 50000; // advertising time in ms
     private static final int    TTS_REQUEST_CODE = 22;    // arbitrary request id code
     private static final String ACTION_SCAN_LE_DEVICE = "ACTION_SCAN_LE_DEVICE";    // for receiver
-    private static final String YOBLE   = "Yoble";                                  // what we say
+    private static final String YOBLE = "Yoh!!";                                    // what we say
     private static final String LOG_TAG = BLeDevicesActivity.class.getSimpleName(); // for logcat
     private static String       EMPTY;               // text to show on swipe card with no device
     private static String       ERR_ADVERTISE_FAIL;  // error message for advertise start failure
     private static String       ERR_SCAN_FAIL;       // error message for scan start failed
     private static ProgressBar  PROGRESS_BAR;        // used by scan menu item in toolbar
+//    private static int          COUNT_IN_THIS_SCAN;  // number of results returned in current scan
     private List<Pair<String, String>>
                                   al;                // list to store found devices <name, address>
+//    private List<Pair<String, String>>
+//                                  alCopy;            // back up of list of found devices
     private ArrayAdapter<Pair<String, String>>
                                   arrayAdapter;      // for SwipeFlingAdapterView
     private BluetoothAdapter      mBluetoothAdapter; // the local Bluetooth adapter
@@ -80,6 +83,7 @@ public class BLeDevicesActivity extends Activity {
     private BluetoothGatt         bgConnectedGatt;   // for central role
     private BluetoothGattServer   mGattServer;       // for peripheral role
     private TextToSpeech          ttsTextToSpeech;
+    private boolean               inOnPause;         // used to not show EMPTY dialog if in onPause
 
 
     /**
@@ -108,6 +112,8 @@ public class BLeDevicesActivity extends Activity {
         ERR_ADVERTISE_FAIL = getResources().getString(R.string.error_le_advertise_start_failure);
         ERR_SCAN_FAIL = getResources().getString(R.string.error_le_scan_failed);
         PROGRESS_BAR = new ProgressBar(this);
+
+//        alCopy = new ArrayList<>();
 
         // for navigation button set in layout
         toolbar.setNavigationOnClickListener(new View.OnClickListener() {
@@ -174,12 +180,14 @@ public class BLeDevicesActivity extends Activity {
             @Override
             public void removeFirstObjectInAdapter() {
                 // this is the simplest way to delete an object from the Adapter (/AdapterView)
-                Log.d("LIST", "removed object!");
+
                 // defensive check against index 0 size 0 IndexOutOfBoundsException seen in testing
                 if (al != null && al.size() > 0) {
-                    al.add(al.size(), al.get(0)); // clk: add first object to end before removing
+                    // add first object to end before removing, so we effect a circular list
+                    al.add(al.size(), al.get(0));
                     al.remove(0);
                     arrayAdapter.notifyDataSetChanged();
+                    Log.d("LIST", "removed object!");
                 }
             }
 
@@ -199,22 +207,7 @@ public class BLeDevicesActivity extends Activity {
             @Override
             public void onAdapterAboutToEmpty(int itemsInAdapter) {
                 // Ask for more data here
-
-                // clk: For now, a hack around seen current behavior of the library so that
-                // it would show a second card underneath first if itemsInAdapter is 0;
-                // also see related hack in ScanCallBack.onScanResult().
-                // TODO: look at fixing the library if possible
-                if (itemsInAdapter == 0 && al != null) { // defensive check for possible NPE
-                    al.add(new Pair<>(EMPTY, ""));
-                    Log.d("LIST", "notified 0");
-                }
-
-                // add an 'Empty' card
-                if (al != null && arrayAdapter != null) { // defensive check for possible NPE
-                    al.add(new Pair<>(EMPTY, ""));
-                    arrayAdapter.notifyDataSetChanged();
-                    Log.d("LIST", "notified");
-                }
+                //Log.d("LIST", "notified");
             }
 
             @Override
@@ -284,7 +277,11 @@ public class BLeDevicesActivity extends Activity {
     }
 
     static void makeToast(Context ctx, String s){
-        Toast.makeText(ctx, s, Toast.LENGTH_SHORT).show();
+        makeToast(ctx, s, Toast.LENGTH_SHORT);
+    }
+
+    static void makeToast(Context ctx, String s, int toastLength) {
+        Toast.makeText(ctx, s, toastLength).show();
     }
 
     @Override
@@ -380,9 +377,16 @@ public class BLeDevicesActivity extends Activity {
     protected void onPause() {
         super.onPause();
 
+        // clear any pending stop scan
+        mHandler.removeCallbacks(rStopScanLeDevice);
         // stop any ongoing scan
+        inOnPause = true;
         scanLeDevice(false);
+
         al.clear();
+//        alCopy.clear();
+
+        inOnPause = false;
 
         // don't stop advertise here because we want that to continue in background, do in onDestroy
 
@@ -419,8 +423,7 @@ public class BLeDevicesActivity extends Activity {
      * Although device cannot both scan and advertise at same time, we should not stop advertising
      * before starting scan because of reason stated in the comment in the ble advertise method.
      * We initially start advertising after scan is first stopped, and defensively re-start
-     * advertising on subsequent stopping of scan; see comment in the ble advertise method about
-     * what seems to be a benign ADVERTISE_FAILED_ALREADY_STARTED error code 3 seen in logcat.
+     * advertising on subsequent stopping of scan; see comment in the ble advertise method.
      *
      * Method is called by a broadcast receiver (activated by repeating alarms), so must be
      * package-private.
@@ -431,18 +434,22 @@ public class BLeDevicesActivity extends Activity {
     void scanLeDevice(final boolean enable) {
         if (enable) {
             // post delayed job to stop scanning after a pre-defined scan period
-            mHandler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    scanLeDevice(false);
-                }
-            }, PERIOD_SCAN);
+            mHandler.postDelayed(rStopScanLeDevice, PERIOD_SCAN);
 
             // don't stop advertise here; that changes device hardware (MAC) address seen by others
+
+            // copy current items in adapter for restoring later if no results found in this scan
+//            alCopy.clear();
+//            for (Pair<String, String> pair : al) {
+//                // don't want to cache any EMPTY card
+//                if (!EMPTY.equals(pair.first))
+//                    alCopy.add(pair);
+//            }
 
             // clear array in adapter
             al.clear();
 
+//            COUNT_IN_THIS_SCAN = 0;
             // now start scan
             bluetoothLeScanner.startScan(scScanCallback);
             // set scan menu icon indicator on
@@ -456,50 +463,64 @@ public class BLeDevicesActivity extends Activity {
             if (miScanMenuItem != null) // needed, saw NPE when doing rapid orientation change test
                 miScanMenuItem.setActionView(null);
 
+//            if (COUNT_IN_THIS_SCAN == 0) {
+//                // restore array contents in adapter, MUST do element-copy and not pairList = copy
+//                //  because then clearing copy is same as clearing pairList
+//                for (Pair<String, String> pair : alCopy) {
+//                    al.add(pair);
+//                }
+//            }
+
+            if (al.size() == 0 && !inOnPause) {
+                // no ble devices found and screen is not going away because we are in onPause()
+                // TODO show dialog to ask a nearby friend with Lollipop device to download app with QR code
+                makeToast(getBaseContext(), getResources().getString(R.string.empty),
+                        Toast.LENGTH_LONG);
+            }
+
             // assume stopScan is synchronous, so can start advertising
             advertiseLe(true);
         }
     }
+
+    private Runnable rStopScanLeDevice = new Runnable() {
+        @Override
+        public void run() {
+            scanLeDevice(false);
+        }
+    };
 
     // Device scan callback.
     private ScanCallback scScanCallback = new ScanCallback() {
         @Override
         public void onScanResult(int callbackType, final ScanResult result) {
             super.onScanResult(callbackType, result);
-            // clk: a hack to remove any extraneous EMPTY cards
-            //  related to hack in SwipeFlingAdapterView fling listener's onAdapterAboutToEmpty()
-            while ( al.size()==2 &&
-                    (EMPTY.equals(al.get(0).first) || EMPTY.equals(al.get(1).first)) ) {
-                if(EMPTY.equals(al.get(1).first)) {
-                    al.remove(1); // remove first element at 0 index last
-                    Log.d(LOG_TAG, "removed get(1) EMPTY");
-                }
-                if(EMPTY.equals(al.get(0).first)) {
-                    al.remove(0);
-                    Log.d(LOG_TAG, "removed get(0) EMPTY");
-                }
-            }
-            // get result to put on array adapter for swipe cards
-            final BluetoothDevice device = result.getDevice();
+
+            // get result to put in array adapter for swipe cards
+            BluetoothDevice device = result.getDevice();
             final String resultDeviceName;
             if (device.getName() != null)
                 resultDeviceName = device.getName();
             else
                 resultDeviceName = ""+Math.abs(device.getAddress().hashCode());
 
+            // check whether it's already in array adapter
+            final Pair<String, String> pair = new Pair<>(resultDeviceName, device.getAddress());
+            if (al.contains(pair))
+                return;
+
+            // ok add to array adapter
+            // moved as much processing as possible up here to do first, and not in UI thread
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     // defensive check against NPE seen in testing with orientation change
-                    if (al != null && arrayAdapter != null) {
+                    if (arrayAdapter != null) {
                         // update the arraylist and notify adapter of change
-                        Pair<String, String> pair =
-                                new Pair<>(resultDeviceName, device.getAddress());
-                        if (!al.contains(pair)) {
-                            al.add(pair);
-                            arrayAdapter.notifyDataSetChanged();
-                            Log.d(LOG_TAG, "added " + resultDeviceName);
-                        }
+                        al.add(pair);
+                        arrayAdapter.notifyDataSetChanged();
+//                        COUNT_IN_THIS_SCAN++;
+                        Log.d(LOG_TAG, "added " + resultDeviceName);
                     }
                 }
             });
@@ -623,7 +644,7 @@ public class BLeDevicesActivity extends Activity {
 
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 ttsTextToSpeech.speak(YOBLE, TextToSpeech.QUEUE_FLUSH, null, "utteranceId");
-                // TODO do send notification if possible when in background with screen off??
+                // TODO send custom notification if possible when in background with screen off??
                 Log.d(LOG_TAG, "***** YOBLE from "+"device address:"+device.getAddress());
 
                 // Need to cancel connection explicitly here, otherwise see disconnect take 30-60s
