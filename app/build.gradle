@@ -26,4 +26,5 @@ dependencies {
     // if lintOptions or packagingOptions, or proguard settings needed for butterknife
     //  see http://jakewharton.github.io/butterknife/
     compile 'com.jakewharton:butterknife:6.0.0'
+    compile 'com.android.support:cardview-v7:21.0.3'
 }
