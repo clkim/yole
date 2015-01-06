@@ -105,6 +105,7 @@ public class BLeDevicesActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
         setContentView(R.layout.activity_ble_devices);
         ButterKnife.inject(this); // inject the annotated view objects
 
@@ -684,4 +685,12 @@ public class BLeDevicesActivity extends Activity {
         }
     }
 
+    @Override
+    public void onBackPressed() {
+        // After app is launched from Home or Recents, want Back to cause app pause and not destroy
+        //  so we handle this callback ourselves and simply go to Home screen
+        startActivity(new Intent (Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_HOME)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+    }
 }
