@@ -2,5 +2,9 @@
 <resources>
     <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
     <!-- <style name="AppTheme" parent="android:Theme.Material.Light"> -->
+        <item name="android:selectableItemBackground">@color/card_dark_blue</item>
+        <item name="android:colorControlHighlight">@android:color/darker_gray</item>
     </style>
+
+    <color name="card_dark_blue">#E339</color>
 </resources>
