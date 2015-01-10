@@ -53,7 +53,7 @@ import butterknife.InjectView;
 
 public class BLeDevicesActivity extends Activity {
 
-    private static final int    MAX_VISIBLE = 2;          // so at most 2 cards are 'Empty'
+    private static final int    MAX_VISIBLE = 2;          // 1st card is swiped, 2nd if any is below
     private static final int    REQUEST_ENABLE_BT = 11;   // arbitrary request id code
     private static final long   PERIOD_SCAN = 11100;      // scanning ms, avoid overlap advertising
     private static final int    PERIOD_ADVERTISE = 50000; // advertising time in ms
@@ -61,7 +61,7 @@ public class BLeDevicesActivity extends Activity {
     private static final String ACTION_SCAN_LE_DEVICE = "ACTION_SCAN_LE_DEVICE";    // for receiver
     private static final String YOBLE = "Yoh!!";                                    // what we say
     private static final String LOG_TAG = BLeDevicesActivity.class.getSimpleName(); // for logcat
-    private static String       EMPTY;               // text to show on swipe card with no device
+    private static String       ASK_FRIENDS_DOWNLOAD;// dialog text if scan finds no nearby devices
     private static String       ERR_ADVERTISE_FAIL;  // error message for advertise start failure
     private static String       ERR_SCAN_FAIL;       // error message for scan start failed
     private static ProgressBar  PROGRESS_BAR;        // used by scan menu item in toolbar
@@ -83,7 +83,7 @@ public class BLeDevicesActivity extends Activity {
     private BluetoothGatt         bgConnectedGatt;   // for central role
     private BluetoothGattServer   mGattServer;       // for peripheral role
     private TextToSpeech          ttsTextToSpeech;
-    private boolean               inOnPause;         // used to not show EMPTY dialog if in onPause
+    private boolean               inOnPause;         // don't show ASK FRIENDS dialog if in onPause
 
 
     /**
@@ -109,7 +109,7 @@ public class BLeDevicesActivity extends Activity {
         setContentView(R.layout.activity_ble_devices);
         ButterKnife.inject(this); // inject the annotated view objects
 
-        EMPTY = getResources().getString(R.string.empty);
+        ASK_FRIENDS_DOWNLOAD = getResources().getString(R.string.empty);
         ERR_ADVERTISE_FAIL = getResources().getString(R.string.error_le_advertise_start_failure);
         ERR_SCAN_FAIL = getResources().getString(R.string.error_le_scan_failed);
         PROGRESS_BAR = new ProgressBar(this);
@@ -226,14 +226,10 @@ public class BLeDevicesActivity extends Activity {
         flingContainer.setOnItemClickListener(new SwipeFlingAdapterView.OnItemClickListener() {
             @Override @SuppressWarnings("unchecked")
             public void onItemClicked(int itemPosition, Object dataObject) {
-                if (EMPTY.equals(((Pair<String, String>)dataObject).first))
-                    makeToast(BLeDevicesActivity.this, "Clicked on Empty!");
-                else {
-                    String address = ((Pair<String, String>) dataObject).second;
-                    BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
-                    bgConnectedGatt = device.connectGatt(getApplicationContext(), false, mGattCallback);
-                    makeToast(BLeDevicesActivity.this, "Clicked!");
-                }
+                String address = ((Pair<String, String>) dataObject).second;
+                BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
+                bgConnectedGatt = device.connectGatt(getApplicationContext(), false, mGattCallback);
+                makeToast(BLeDevicesActivity.this, "Clicked!");
             }
         });
 
