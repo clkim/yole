@@ -677,6 +677,8 @@ public class BLeDevicesActivity extends Activity {
             case R.id.action_ble_scan:
                 scanLeDevice(true);
                 return true;
+            case R.id.action_finish_app:
+                finish();
             case R.id.action_settings:
                 return true;
 
