@@ -3,13 +3,14 @@
 
     <string name="app_name">YOble</string>
     <string name="action_settings">Settings</string>
-    <string name="empty">Ask a friend to download this app, and try scanning again</string>
-    <string name="ble_not_supported">Bluetooth LE is not supported</string>
+    <string name="toast_no_devices_found">Ask a friend to download this app, and try scanning again</string>
+    <string name="title_dialog_share_app">Share this app with friends</string>
     <string name="error_bluetooth_not_supported">Bluetooth is not supported</string>
-    <string name="error_le_peripheral_role_not_supported">
-        Your device can scan for nearby devices that are running this app, but cannot advertise your presence
-    </string>
+    <string name="error_ble_not_supported">Bluetooth LE is not supported</string>
+    <string name="error_le_peripheral_role_not_supported">Your device can scan for nearby devices that are running this app, but cannot advertise your presence</string>
     <string name="error_le_scan_failed">Failed scan for others</string>
     <string name="error_le_advertise_start_failure">Failed advertise presence</string>
+    <string name="button_dismiss">Dismiss</string>
+    <string name="button_share_app">Share app</string>
 
 </resources>

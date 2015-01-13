@@ -2,6 +2,7 @@ package com.jinmobi.yole;
 
 import android.app.Activity;
 import android.app.AlarmManager;
+import android.app.DialogFragment;
 import android.app.PendingIntent;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
@@ -52,6 +53,7 @@ import butterknife.InjectView;
 
 
 public class BLeDevicesActivity extends Activity {
+    protected static boolean hasShownShareAppDialogBefore = false; //show Share App dialog only once
 
     private static final int    MAX_VISIBLE = 2;          // 1st card is swiped, 2nd if any is below
     private static final int    REQUEST_ENABLE_BT = 11;   // arbitrary request id code
@@ -59,9 +61,9 @@ public class BLeDevicesActivity extends Activity {
     private static final int    PERIOD_ADVERTISE = 50000; // advertising time in ms
     private static final int    TTS_REQUEST_CODE = 22;    // arbitrary request id code
     private static final String ACTION_SCAN_LE_DEVICE = "ACTION_SCAN_LE_DEVICE";    // for receiver
-    private static final String YOBLE = "Yoh!!";                                    // what we say
+    private static final String YOBLE = "Yo!";                                      // what we say
+    private static final String KEY_DIALOG_ALREADY_SHOWN = "KEY_DIALOG_STATE";      // saved state
     private static final String LOG_TAG = BLeDevicesActivity.class.getSimpleName(); // for logcat
-    private static String       ASK_FRIENDS_DOWNLOAD;// dialog text if scan finds no nearby devices
     private static String       ERR_ADVERTISE_FAIL;  // error message for advertise start failure
     private static String       ERR_SCAN_FAIL;       // error message for scan start failed
     private static ProgressBar  PROGRESS_BAR;        // used by scan menu item in toolbar
@@ -83,7 +85,7 @@ public class BLeDevicesActivity extends Activity {
     private BluetoothGatt         bgConnectedGatt;   // for central role
     private BluetoothGattServer   mGattServer;       // for peripheral role
     private TextToSpeech          ttsTextToSpeech;
-    private boolean               inOnPause;         // don't show ASK FRIENDS dialog if in onPause
+    private boolean               isInOnPause;       // don't show Share App dialog if in onPause
 
 
     /**
@@ -106,10 +108,14 @@ public class BLeDevicesActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        if (savedInstanceState != null) {
+            hasShownShareAppDialogBefore = savedInstanceState.getBoolean(KEY_DIALOG_ALREADY_SHOWN,
+                    false);
+        }
+
         setContentView(R.layout.activity_ble_devices);
         ButterKnife.inject(this); // inject the annotated view objects
 
-        ASK_FRIENDS_DOWNLOAD = getResources().getString(R.string.empty);
         ERR_ADVERTISE_FAIL = getResources().getString(R.string.error_le_advertise_start_failure);
         ERR_SCAN_FAIL = getResources().getString(R.string.error_le_scan_failed);
         PROGRESS_BAR = new ProgressBar(this);
@@ -134,7 +140,8 @@ public class BLeDevicesActivity extends Activity {
         // clk: reportedly should not be needed if has following in manifest
         //  <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
         if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
-            Toast.makeText(this, R.string.ble_not_supported, Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.error_ble_not_supported, Toast.LENGTH_LONG)
+                    .show();
             finish();
         }
 
@@ -145,7 +152,7 @@ public class BLeDevicesActivity extends Activity {
 
         // Checks if Bluetooth is supported on the device.
         if (mBluetoothAdapter == null) {
-            Toast.makeText(this, R.string.error_bluetooth_not_supported, Toast.LENGTH_SHORT)
+            Toast.makeText(this, R.string.error_bluetooth_not_supported, Toast.LENGTH_LONG)
                     .show();
             finish();
             return;
@@ -156,7 +163,7 @@ public class BLeDevicesActivity extends Activity {
         //  in that case, no Gatt Server is instantiated,
         //  and we check for null Gatt Server as well as null BLE Advertiser
         if (!mBluetoothAdapter.isMultipleAdvertisementSupported()) {
-            Toast.makeText(this, R.string.error_le_peripheral_role_not_supported,Toast.LENGTH_LONG)
+            Toast.makeText(this, R.string.error_le_peripheral_role_not_supported, Toast.LENGTH_LONG)
                     .show();
 
         } else {
@@ -353,7 +360,8 @@ public class BLeDevicesActivity extends Activity {
                         if (i == TextToSpeech.SUCCESS) {
                             ttsTextToSpeech.setLanguage(Locale.getDefault());
                         } else {
-                            Log.e(TextToSpeech.OnInitListener.class.getSimpleName(), "Snap! Text-to-speech onInit returned FAIL");
+                            Log.e(TextToSpeech.OnInitListener.class.getSimpleName(),
+                                    "Snap! Text-to-speech onInit returned FAIL");
                         }
                     }
                 });
@@ -372,22 +380,30 @@ public class BLeDevicesActivity extends Activity {
 
     @Override
     protected void onPause() {
+        isInOnPause = true; // used to flag showing Share App dialog
+
         super.onPause();
 
         // clear any pending stop scan
         mHandler.removeCallbacks(rStopScanLeDevice);
         // stop any ongoing scan
-        inOnPause = true;
         scanLeDevice(false);
 
         al.clear();
 //        alCopy.clear();
 
-        inOnPause = false;
+        isInOnPause = false; // used to flag showing Share App dialog
 
         // don't stop advertise here because we want that to continue in background, do in onDestroy
 
         // don't close Gatt Server here because we want to get connections in background
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        outState.putBoolean(KEY_DIALOG_ALREADY_SHOWN, hasShownShareAppDialogBefore);
+        // always call super class so as to save the view hierarchy state
+        super.onSaveInstanceState(outState);
     }
 
     @Override
@@ -468,10 +484,23 @@ public class BLeDevicesActivity extends Activity {
 //                }
 //            }
 
-            if (al.size() == 0 && !inOnPause) {
-                // no ble devices found and screen is not going away because we are in onPause()
-                // TODO show dialog to ask a nearby friend with Lollipop device to download app with QR code
-                makeToast(getBaseContext(), getResources().getString(R.string.empty),
+            if (al.size() == 0 && !hasShownShareAppDialogBefore && !isInOnPause) {
+                // No ble devices found, not shown dialog before, and not about to exit in onPause()
+                //  so show dialog to share app
+                // But need to prevent following seen in testing
+                //  "IllegalStateException: Can not perform this action after onSaveInstanceState"
+                //   check for activity covered by gmail-compose screen, or is changing orientation
+                if (this.hasWindowFocus() && !isChangingConfigurations()) {
+                    showShareAppDialog();
+
+                    // set flag to not show dialog again
+                    hasShownShareAppDialogBefore = true;
+                }
+            }
+            if (al.size() == 0 && hasShownShareAppDialogBefore && !isInOnPause) {
+                // not showing share app dialog more than once, but show a toast with call-to-action
+                makeToast(getBaseContext(),
+                        getResources().getString(R.string.toast_no_devices_found),
                         Toast.LENGTH_LONG);
             }
 
@@ -486,6 +515,12 @@ public class BLeDevicesActivity extends Activity {
             scanLeDevice(false);
         }
     };
+
+    private void showShareAppDialog() {
+        DialogFragment dialogFragment = new ShareAppDialogFragment();
+        dialogFragment.show(getFragmentManager(),
+                "TAG_" + ShareAppDialogFragment.class.getSimpleName());
+    }
 
     // Device scan callback.
     private ScanCallback scScanCallback = new ScanCallback() {
@@ -658,7 +693,7 @@ public class BLeDevicesActivity extends Activity {
     public boolean onCreateOptionsMenu(Menu menu) {
         // Inflate the menu; this adds items to the action bar if it is present.
         getMenuInflater().inflate(R.menu.menu_ble_devices, menu);
-        miScanMenuItem = menu.findItem(R.id.action_ble_scan);
+        miScanMenuItem = menu.findItem(R.id.menu_ble_scan);
         return super.onCreateOptionsMenu(menu);
     }
 
@@ -670,12 +705,16 @@ public class BLeDevicesActivity extends Activity {
         int id = item.getItemId();
 
         switch (id) {
-            case R.id.action_ble_scan:
+            case R.id.menu_ble_scan:
                 scanLeDevice(true);
                 return true;
-            case R.id.action_finish_app:
+            case R.id.menu_finish_app:
                 finish();
-            case R.id.action_settings:
+                return true;
+            case R.id.menu_share_app:
+                showShareAppDialog();
+                return true;
+            case R.id.menu_settings:
                 return true;
 
             default:

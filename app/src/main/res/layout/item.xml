@@ -27,7 +27,7 @@
             android:background="@drawable/ripple_background"
             android:clickable="true"
             android:gravity="center"
-            tools:text="@string/empty"
+            tools:text="@string/toast_no_devices_found"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
