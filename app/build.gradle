@@ -27,4 +27,5 @@ dependencies {
     //  see http://jakewharton.github.io/butterknife/
     compile 'com.jakewharton:butterknife:6.0.0'
     compile 'com.android.support:cardview-v7:21.0.3'
+    compile 'com.android.support:support-annotations:21.0.3'
 }

@@ -29,6 +29,7 @@ import android.os.Handler;
 import android.os.ParcelUuid;
 import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
+import android.support.annotation.NonNull;
 import android.util.Log;
 import android.util.Pair;
 import android.view.LayoutInflater;
@@ -400,7 +401,7 @@ public class BLeDevicesActivity extends Activity {
     }
 
     @Override
-    protected void onSaveInstanceState(Bundle outState) {
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
         outState.putBoolean(KEY_DIALOG_ALREADY_SHOWN, hasShownShareAppDialogBefore);
         // always call super class so as to save the view hierarchy state
         super.onSaveInstanceState(outState);
